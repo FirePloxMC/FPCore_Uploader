@@ -1,0 +1,8 @@
+{
+    "files.associations": {
+        "*.embeddedhtml": "html",
+        "windows.h": "c",
+        "ws2tcpip.h": "c",
+        "winsock2.h": "c"
+    }
+}

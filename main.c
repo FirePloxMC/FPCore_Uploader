@@ -10,6 +10,7 @@
 #define BUFFER_SIZE 8192
 
 char API_KEY[256] = {0};
+char WEBHOOK_URL[512] = {0};
 
 int load_api_key(const char *filepath) {
     FILE *file = fopen(filepath, "r");
@@ -29,6 +30,31 @@ int load_api_key(const char *filepath) {
     return 1;
 }
 
+int load_webhook_url(const char *filepath) {
+    FILE *file = fopen(filepath, "r");
+    if (!file) return 0;
+
+    if (fgets(WEBHOOK_URL, sizeof(WEBHOOK_URL), file) == NULL) {
+        fclose(file);
+        return 0;
+    }
+
+    size_t len = strlen(WEBHOOK_URL);
+    if (len > 0 && WEBHOOK_URL[len - 1] == '\n') {
+        WEBHOOK_URL[len - 1] = '\0';
+    }
+
+    fclose(file);
+    return 1;
+}
+
+const char *SERVER_NAMES[] = {
+    "Survival",
+    "Hub", 
+    "Creative",
+    "Skyblock",
+    "Dev"
+};
 
 const char *SERVERS[] = {
     "12dd4fb5", // Survival
@@ -41,6 +67,58 @@ const int SERVER_COUNT = 5;
 
 #define DEFAULT_FILE ".\\target\\FPCore-1.0.jar"
 #define DEFAULT_DIR "/plugins"
+
+// Send Discord webhook notification
+void send_discord_webhook(int success, const char *server_name) {
+    if (strlen(WEBHOOK_URL) == 0) return;
+
+    const char *path_start = strstr(WEBHOOK_URL, "discord.com");
+    if (!path_start) return;
+    path_start += strlen("discord.com");
+
+    char webhook_path[512];
+    strncpy(webhook_path, path_start, sizeof(webhook_path) - 1);
+    webhook_path[sizeof(webhook_path) - 1] = '\0';
+
+    HINTERNET hInternet = NULL;
+    HINTERNET hConnect = NULL;
+    HINTERNET hRequest = NULL;
+
+    char json_payload[512];
+    if (success) {
+        snprintf(json_payload, sizeof(json_payload), 
+            "{\"content\":\"FPCore successfully pushed to **%s**\"}", server_name);
+    } else {
+        snprintf(json_payload, sizeof(json_payload), 
+            "{\"content\":\"FPCore failed to push to **%s**\"}", server_name);
+    }
+
+    hInternet = InternetOpenA("FPCoreUploader/1.0", INTERNET_OPEN_TYPE_DIRECT, NULL, NULL, 0);
+    if (!hInternet) return;
+
+    hConnect = InternetConnectA(hInternet, "discord.com", INTERNET_DEFAULT_HTTPS_PORT,
+                                 NULL, NULL, INTERNET_SERVICE_HTTP, 0, 0);
+    if (!hConnect) {
+        InternetCloseHandle(hInternet);
+        return;
+    }
+
+    DWORD flags = INTERNET_FLAG_SECURE | INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_RELOAD;
+    hRequest = HttpOpenRequestA(hConnect, "POST", webhook_path, NULL, NULL, NULL, flags, 0);
+    if (!hRequest) {
+        InternetCloseHandle(hConnect);
+        InternetCloseHandle(hInternet);
+        return;
+    }
+
+    const char* headers = "Content-Type: application/json\r\n";
+    HttpSendRequestA(hRequest, headers, (DWORD)strlen(headers),
+                     json_payload, (DWORD)strlen(json_payload));
+
+    InternetCloseHandle(hRequest);
+    InternetCloseHandle(hConnect);
+    InternetCloseHandle(hInternet);
+}
 
 // Make HTTP request using WinINet - older version
 char *http_request(const char *host, const char *path, int port, int secure, const char *method, const char *headers, const char *body, DWORD body_len) {
@@ -344,13 +422,14 @@ int upload_file(const char *upload_url, const char *filepath, const char *file_d
     return (statusCode >= 200 && statusCode < 300) ? 1 : 0;
 }
 
-int upload_to_server(const char *server_uuid, const char *filepath, const char *file_data, DWORD file_size, const char *directory) {
-    printf("  [%s]\n", server_uuid);
+int upload_to_server(const char *server_uuid, const char *server_name, const char *filepath, const char *file_data, DWORD file_size, const char *directory) {
+    printf("  [%s] (%s)\n", server_name, server_uuid);
     printf("    Fetching upload URL...\n");
     
     char *upload_url = get_upload_url(server_uuid, directory);
     if (!upload_url) {
         printf("    Error: Failed to get upload URL\n");
+        send_discord_webhook(0, server_name);
         return 0;
     }
     
@@ -360,8 +439,10 @@ int upload_to_server(const char *server_uuid, const char *filepath, const char *
     
     if (result) {
         printf("    Success!\n");
+        send_discord_webhook(1, server_name);
     } else {
         printf("    Failed!\n");
+        send_discord_webhook(0, server_name);
     }
     
     return result;
@@ -383,6 +464,10 @@ int main(int argc, char *argv[]) {
         printf("Error: Please set your API key in the source code\n");
         return 1;
     }
+
+    if (!load_webhook_url("webhook.txt")) {
+        printf("Warning: webhook.txt not found, Discord notifications disabled\n");
+    }
     
     DWORD attrs = GetFileAttributesA(file_path);
     if (attrs == INVALID_FILE_ATTRIBUTES) {
@@ -401,7 +486,7 @@ int main(int argc, char *argv[]) {
     
     int success_count = 0;
     for (int i = 0; i < SERVER_COUNT; i++) {
-        if (upload_to_server(SERVERS[i], file_path, file_data, file_size, directory)) {
+        if (upload_to_server(SERVERS[i], SERVER_NAMES[i], file_path, file_data, file_size, directory)) {
             success_count++;
         }
         printf("\n");
